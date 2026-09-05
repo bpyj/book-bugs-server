@@ -204,7 +204,7 @@ app.get(
             fields: {
               ...record.fields,
               Status: "Collected",
-              Qty: 1,
+              Qty: collectionRecord.fields.Quantity ?? 1,
             },
 
             collection: {
