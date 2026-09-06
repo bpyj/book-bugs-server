@@ -376,6 +376,76 @@ app.patch("/api/friend-requests/respond", async (req, res) => {
   }
 });
 
+app.get("/api/friends/:childId", async (req, res) => {
+  try {
+    const requestedChildId = req.params.childId
+      .trim()
+      .toLowerCase();
+
+    const children =
+      await fetchAllAirtableRecords(CHILDREN_TABLE);
+
+    const childRecord = children.find(
+      (record) =>
+        String(record.fields["Child ID"] ?? "")
+          .trim()
+          .toLowerCase() === requestedChildId &&
+        record.fields.Status === "Active"
+    );
+
+    if (!childRecord) {
+      return res.status(404).json({
+        message: "Active child not found",
+      });
+    }
+
+    const friendships =
+      await fetchAllAirtableRecords(FRIENDS_TABLE);
+
+    const acceptedFriendships = friendships.filter(
+      (record) =>
+        record.fields.Status === "Accepted" &&
+        (
+          record.fields["Child 1"]?.includes(childRecord.id) ||
+          record.fields["Child 2"]?.includes(childRecord.id)
+        )
+    );
+
+    const friends = acceptedFriendships
+      .map((record) => {
+        const child1Id = record.fields["Child 1"]?.[0];
+        const child2Id = record.fields["Child 2"]?.[0];
+
+        const friendRecordId =
+          child1Id === childRecord.id
+            ? child2Id
+            : child1Id;
+
+        const friend = children.find(
+          (child) => child.id === friendRecordId
+        );
+
+        if (!friend || friend.fields.Status !== "Active") {
+          return null;
+        }
+
+        return {
+          childId: friend.fields["Child ID"] ?? "",
+          name: friend.fields.Name ?? "",
+          avatar: friend.fields.Avatar?.[0] ?? null,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) =>
+        a.name.localeCompare(b.name)
+      );
+
+    res.json(friends);
+  } catch (error) {
+    sendServerError(res, error);
+  }
+});
+
 app.get("/api/friend-requests/:childId", async (req, res) => {
   try {
     const requestedChildId = req.params.childId
