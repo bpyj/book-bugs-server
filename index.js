@@ -263,6 +263,119 @@ app.post("/api/friend-requests", async (req, res) => {
   }
 });
 
+app.patch("/api/friend-requests/respond", async (req, res) => {
+  try {
+    const fromChildId = String(req.body.fromChildId ?? "")
+      .trim()
+      .toLowerCase();
+
+    const toChildId = String(req.body.toChildId ?? "")
+      .trim()
+      .toLowerCase();
+
+    const action = String(req.body.action ?? "")
+      .trim()
+      .toLowerCase();
+
+    if (!fromChildId || !toChildId || !action) {
+      return res.status(400).json({
+        message: "fromChildId, toChildId and action are required",
+      });
+    }
+
+    if (!["accept", "decline"].includes(action)) {
+      return res.status(400).json({
+        message: "Action must be accept or decline",
+      });
+    }
+
+    const children =
+      await fetchAllAirtableRecords(CHILDREN_TABLE);
+
+    const fromChild = children.find(
+      (record) =>
+        String(record.fields["Child ID"] ?? "")
+          .trim()
+          .toLowerCase() === fromChildId
+    );
+
+    const toChild = children.find(
+      (record) =>
+        String(record.fields["Child ID"] ?? "")
+          .trim()
+          .toLowerCase() === toChildId
+    );
+
+    if (!fromChild || !toChild) {
+      return res.status(404).json({
+        message: "Child not found",
+      });
+    }
+
+    const friendships =
+      await fetchAllAirtableRecords(FRIENDS_TABLE);
+
+    const requestRecord = friendships.find((record) => {
+      const child1 = record.fields["Child 1"]?.[0];
+      const child2 = record.fields["Child 2"]?.[0];
+      const requestedBy = record.fields["Requested By"]?.[0];
+
+      return (
+        record.fields.Status === "Pending" &&
+        child1 === fromChild.id &&
+        child2 === toChild.id &&
+        requestedBy === fromChild.id
+      );
+    });
+
+    if (!requestRecord) {
+      return res.status(404).json({
+        message: "Pending friend request not found",
+      });
+    }
+
+    const newStatus =
+      action === "accept" ? "Accepted" : "Declined";
+
+    const airtableResponse = await fetch(
+      `${AIRTABLE_API_ROOT}/${process.env.AIRTABLE_BASE_ID}/${encodeURIComponent(FRIENDS_TABLE)}/${requestRecord.id}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${process.env.AIRTABLE_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          fields: {
+            Status: newStatus,
+          },
+        }),
+      }
+    );
+
+    if (!airtableResponse.ok) {
+      const details = await airtableResponse.text();
+
+      throw new AirtableRequestError(
+        airtableResponse.status,
+        details
+      );
+    }
+
+    res.json({
+      message:
+        action === "accept"
+          ? "Friend request accepted"
+          : "Friend request declined",
+      status: newStatus,
+      fromChildId: fromChild.fields["Child ID"],
+      toChildId: toChild.fields["Child ID"],
+    });
+  } catch (error) {
+    sendServerError(res, error);
+  }
+});
+
 app.get("/api/friend-requests/:childId", async (req, res) => {
   try {
     const requestedChildId = req.params.childId
