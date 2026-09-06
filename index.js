@@ -263,6 +263,64 @@ app.post("/api/friend-requests", async (req, res) => {
   }
 });
 
+app.get("/api/friend-requests/:childId", async (req, res) => {
+  try {
+    const requestedChildId = req.params.childId
+      .trim()
+      .toLowerCase();
+
+    const children =
+      await fetchAllAirtableRecords(CHILDREN_TABLE);
+
+    const childRecord = children.find(
+      (record) =>
+        String(record.fields["Child ID"] ?? "")
+          .trim()
+          .toLowerCase() === requestedChildId &&
+        record.fields.Status === "Active"
+    );
+
+    if (!childRecord) {
+      return res.status(404).json({
+        message: "Active child not found",
+      });
+    }
+
+    const friendships =
+      await fetchAllAirtableRecords(FRIENDS_TABLE);
+
+    const incomingRequests = friendships
+      .filter(
+        (record) =>
+          record.fields.Status === "Pending" &&
+          record.fields["Child 2"]?.includes(childRecord.id)
+      )
+      .map((record) => {
+        const requesterId =
+          record.fields["Requested By"]?.[0];
+
+        const requester = children.find(
+          (child) => child.id === requesterId
+        );
+
+        if (!requester) {
+          return null;
+        }
+
+        return {
+          childId: requester.fields["Child ID"] ?? "",
+          name: requester.fields.Name ?? "",
+          avatar: requester.fields.Avatar?.[0] ?? null,
+        };
+      })
+      .filter(Boolean);
+
+    res.json(incomingRequests);
+  } catch (error) {
+    sendServerError(res, error);
+  }
+});
+
 app.get(
   "/api/children/:childId/collection",
   async (req, res) => {
