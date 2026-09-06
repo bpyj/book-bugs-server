@@ -116,6 +116,35 @@ app.get("/api/children", async (req, res) => {
   }
 });
 
+app.get("/api/children/search/:childId", async (req, res) => {
+  try {
+    const requestedChildId = req.params.childId
+      .trim()
+      .toLowerCase();
+
+    const children =
+      await fetchAllAirtableRecords(CHILDREN_TABLE);
+
+    const childRecord = children.find(
+      (record) =>
+        String(record.fields["Child ID"] ?? "")
+          .trim()
+          .toLowerCase() === requestedChildId &&
+        record.fields.Status === "Active"
+    );
+
+    if (!childRecord) {
+      return res.status(404).json({
+        message: "Active child not found",
+      });
+    }
+
+    res.json(serializeChild(childRecord));
+  } catch (error) {
+    sendServerError(res, error);
+  }
+});
+
 app.get(
   "/api/children/:childId/collection",
   async (req, res) => {
