@@ -2,11 +2,14 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const authRoutes = require("./routes/auth");
+const requireAuth = require("./middleware/auth");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use("/api/auth", authRoutes);
 
 const AIRTABLE_API_ROOT = "https://api.airtable.com/v0";
 const CHILDREN_TABLE = "Children";
@@ -117,7 +120,10 @@ app.get("/api/children", async (req, res) => {
   }
 });
 
-app.get("/api/children/search/:childId", async (req, res) => {
+app.get(
+  "/api/children/search/:childId",
+  requireAuth,
+  async (req, res) => {
   try {
     const requestedChildId = req.params.childId
       .trim()
@@ -144,313 +150,348 @@ app.get("/api/children/search/:childId", async (req, res) => {
   } catch (error) {
     sendServerError(res, error);
   }
-});
+ }
+);
 
-app.post("/api/friend-requests", async (req, res) => {
-  try {
-    const fromChildId = String(req.body.fromChildId ?? "")
-      .trim()
-      .toLowerCase();
+app.post(
+  "/api/friend-requests",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const fromChildId = String(req.user.childId)
+        .trim()
+        .toLowerCase();
 
-    const toChildId = String(req.body.toChildId ?? "")
-      .trim()
-      .toLowerCase();
+      const toChildId = String(req.body.toChildId ?? "")
+        .trim()
+        .toLowerCase();
 
-    if (!fromChildId || !toChildId) {
-      return res.status(400).json({
-        message: "fromChildId and toChildId are required",
-      });
-    }
-
-    if (fromChildId === toChildId) {
-      return res.status(400).json({
-        message: "You cannot add yourself as a friend",
-      });
-    }
-
-    const children =
-      await fetchAllAirtableRecords(CHILDREN_TABLE);
-
-    const fromChild = children.find(
-      (record) =>
-        String(record.fields["Child ID"] ?? "")
-          .trim()
-          .toLowerCase() === fromChildId &&
-        record.fields.Status === "Active"
-    );
-
-    const toChild = children.find(
-      (record) =>
-        String(record.fields["Child ID"] ?? "")
-          .trim()
-          .toLowerCase() === toChildId &&
-        record.fields.Status === "Active"
-    );
-
-    if (!fromChild || !toChild) {
-      return res.status(404).json({
-        message: "Active child not found",
-      });
-    }
-
-    const existingFriendships =
-      await fetchAllAirtableRecords(FRIENDS_TABLE);
-
-    const existing = existingFriendships.find((record) => {
-      const child1 = record.fields["Child 1"]?.[0];
-      const child2 = record.fields["Child 2"]?.[0];
-
-      const samePair =
-        (child1 === fromChild.id && child2 === toChild.id) ||
-        (child1 === toChild.id && child2 === fromChild.id);
-
-      return (
-        samePair &&
-        ["Pending", "Accepted"].includes(
-          record.fields.Status
-        )
-      );
-    });
-
-    if (existing) {
-      return res.status(409).json({
-        message: "Friend request or friendship already exists",
-      });
-    }
-
-    const airtableResponse = await fetch(
-      `${AIRTABLE_API_ROOT}/${process.env.AIRTABLE_BASE_ID}/${encodeURIComponent(FRIENDS_TABLE)}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.AIRTABLE_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          records: [
-            {
-              fields: {
-                Friendship: `${fromChild.fields["Child ID"]} - ${toChild.fields["Child ID"]}`,
-                "Child 1": [fromChild.id],
-                "Child 2": [toChild.id],
-                "Requested By": [fromChild.id],
-                Status: "Pending",
-                Created: new Date().toISOString(),
-              },
-            },
-          ],
-        }),
+      if (!toChildId) {
+        return res.status(400).json({
+          message: "toChildId is required",
+        });
       }
-    );
 
-    if (!airtableResponse.ok) {
-      const details = await airtableResponse.text();
+      if (fromChildId === toChildId) {
+        return res.status(400).json({
+          message: "You cannot add yourself as a friend",
+        });
+      }
 
-      throw new AirtableRequestError(
-        airtableResponse.status,
-        details
+      const children =
+        await fetchAllAirtableRecords(CHILDREN_TABLE);
+
+      const fromChild = children.find(
+        (record) =>
+          String(record.fields["Child ID"] ?? "")
+            .trim()
+            .toLowerCase() === fromChildId &&
+          record.fields.Status === "Active"
       );
-    }
 
-    const data = await airtableResponse.json();
-
-    res.status(201).json({
-      message: "Friend request sent",
-      request: data.records[0],
-    });
-  } catch (error) {
-    sendServerError(res, error);
-  }
-});
-
-app.patch("/api/friend-requests/respond", async (req, res) => {
-  try {
-    const fromChildId = String(req.body.fromChildId ?? "")
-      .trim()
-      .toLowerCase();
-
-    const toChildId = String(req.body.toChildId ?? "")
-      .trim()
-      .toLowerCase();
-
-    const action = String(req.body.action ?? "")
-      .trim()
-      .toLowerCase();
-
-    if (!fromChildId || !toChildId || !action) {
-      return res.status(400).json({
-        message: "fromChildId, toChildId and action are required",
-      });
-    }
-
-    if (!["accept", "decline"].includes(action)) {
-      return res.status(400).json({
-        message: "Action must be accept or decline",
-      });
-    }
-
-    const children =
-      await fetchAllAirtableRecords(CHILDREN_TABLE);
-
-    const fromChild = children.find(
-      (record) =>
-        String(record.fields["Child ID"] ?? "")
-          .trim()
-          .toLowerCase() === fromChildId
-    );
-
-    const toChild = children.find(
-      (record) =>
-        String(record.fields["Child ID"] ?? "")
-          .trim()
-          .toLowerCase() === toChildId
-    );
-
-    if (!fromChild || !toChild) {
-      return res.status(404).json({
-        message: "Child not found",
-      });
-    }
-
-    const friendships =
-      await fetchAllAirtableRecords(FRIENDS_TABLE);
-
-    const requestRecord = friendships.find((record) => {
-      const child1 = record.fields["Child 1"]?.[0];
-      const child2 = record.fields["Child 2"]?.[0];
-      const requestedBy = record.fields["Requested By"]?.[0];
-
-      return (
-        record.fields.Status === "Pending" &&
-        child1 === fromChild.id &&
-        child2 === toChild.id &&
-        requestedBy === fromChild.id
+      const toChild = children.find(
+        (record) =>
+          String(record.fields["Child ID"] ?? "")
+            .trim()
+            .toLowerCase() === toChildId &&
+          record.fields.Status === "Active"
       );
-    });
 
-    if (!requestRecord) {
-      return res.status(404).json({
-        message: "Pending friend request not found",
+      if (!fromChild || !toChild) {
+        return res.status(404).json({
+          message: "Active child not found",
+        });
+      }
+
+      const existingFriendships =
+        await fetchAllAirtableRecords(FRIENDS_TABLE);
+
+      const existing = existingFriendships.find((record) => {
+        const child1 = record.fields["Child 1"]?.[0];
+        const child2 = record.fields["Child 2"]?.[0];
+
+        const samePair =
+          (child1 === fromChild.id && child2 === toChild.id) ||
+          (child1 === toChild.id && child2 === fromChild.id);
+
+        return (
+          samePair &&
+          ["Pending", "Accepted"].includes(
+            record.fields.Status
+          )
+        );
       });
-    }
 
-    const newStatus =
-      action === "accept" ? "Accepted" : "Declined";
+      if (existing) {
+        return res.status(409).json({
+          message: "Friend request or friendship already exists",
+        });
+      }
 
-    const airtableResponse = await fetch(
-      `${AIRTABLE_API_ROOT}/${process.env.AIRTABLE_BASE_ID}/${encodeURIComponent(FRIENDS_TABLE)}/${requestRecord.id}`,
-      {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${process.env.AIRTABLE_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          fields: {
-            Status: newStatus,
+      const airtableResponse = await fetch(
+        `${AIRTABLE_API_ROOT}/${process.env.AIRTABLE_BASE_ID}/${encodeURIComponent(FRIENDS_TABLE)}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${process.env.AIRTABLE_TOKEN}`,
+            "Content-Type": "application/json",
           },
-        }),
-      }
-    );
-
-    if (!airtableResponse.ok) {
-      const details = await airtableResponse.text();
-
-      throw new AirtableRequestError(
-        airtableResponse.status,
-        details
+          body: JSON.stringify({
+            records: [
+              {
+                fields: {
+                  Friendship: `${fromChild.fields["Child ID"]} - ${toChild.fields["Child ID"]}`,
+                  "Child 1": [fromChild.id],
+                  "Child 2": [toChild.id],
+                  "Requested By": [fromChild.id],
+                  Status: "Pending",
+                  Created: new Date().toISOString(),
+                },
+              },
+            ],
+          }),
+        }
       );
-    }
 
-    res.json({
-      message:
-        action === "accept"
-          ? "Friend request accepted"
-          : "Friend request declined",
-      status: newStatus,
-      fromChildId: fromChild.fields["Child ID"],
-      toChildId: toChild.fields["Child ID"],
-    });
-  } catch (error) {
-    sendServerError(res, error);
-  }
-});
+      if (!airtableResponse.ok) {
+        const details = await airtableResponse.text();
 
-app.get("/api/friends/:childId", async (req, res) => {
-  try {
-    const requestedChildId = req.params.childId
-      .trim()
-      .toLowerCase();
+        throw new AirtableRequestError(
+          airtableResponse.status,
+          details
+        );
+      }
 
-    const children =
-      await fetchAllAirtableRecords(CHILDREN_TABLE);
+      const data = await airtableResponse.json();
 
-    const childRecord = children.find(
-      (record) =>
-        String(record.fields["Child ID"] ?? "")
-          .trim()
-          .toLowerCase() === requestedChildId &&
-        record.fields.Status === "Active"
-    );
-
-    if (!childRecord) {
-      return res.status(404).json({
-        message: "Active child not found",
+      res.status(201).json({
+        message: "Friend request sent",
+        request: data.records[0],
       });
+    } catch (error) {
+      sendServerError(res, error);
     }
+  }
+);
 
-    const friendships =
-      await fetchAllAirtableRecords(FRIENDS_TABLE);
+app.patch(
+  "/api/friend-requests/respond",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const fromChildId = String(req.body.fromChildId ?? "")
+        .trim()
+        .toLowerCase();
 
-    const acceptedFriendships = friendships.filter(
-      (record) =>
-        record.fields.Status === "Accepted" &&
-        (
-          record.fields["Child 1"]?.includes(childRecord.id) ||
-          record.fields["Child 2"]?.includes(childRecord.id)
-        )
-    );
+      const toChildId = String(req.user.childId)
+        .trim()
+        .toLowerCase();
 
-    const friends = acceptedFriendships
-      .map((record) => {
-        const child1Id = record.fields["Child 1"]?.[0];
-        const child2Id = record.fields["Child 2"]?.[0];
+      const action = String(req.body.action ?? "")
+        .trim()
+        .toLowerCase();
 
-        const friendRecordId =
-          child1Id === childRecord.id
-            ? child2Id
-            : child1Id;
+      if (!fromChildId || !action) {
+        return res.status(400).json({
+          message: "fromChildId and action are required",
+        });
+      }
 
-        const friend = children.find(
-          (child) => child.id === friendRecordId
+      if (!["accept", "decline"].includes(action)) {
+        return res.status(400).json({
+          message: "Action must be accept or decline",
+        });
+      }
+
+      const children =
+        await fetchAllAirtableRecords(CHILDREN_TABLE);
+
+      const fromChild = children.find(
+        (record) =>
+          String(record.fields["Child ID"] ?? "")
+            .trim()
+            .toLowerCase() === fromChildId &&
+          record.fields.Status === "Active"
+      );
+
+      const toChild = children.find(
+        (record) =>
+          String(record.fields["Child ID"] ?? "")
+            .trim()
+            .toLowerCase() === toChildId &&
+          record.fields.Status === "Active"
+      );
+
+      if (!fromChild || !toChild) {
+        return res.status(404).json({
+          message: "Active child not found",
+        });
+      }
+
+      const friendships =
+        await fetchAllAirtableRecords(FRIENDS_TABLE);
+
+      const requestRecord = friendships.find((record) => {
+        const child1 = record.fields["Child 1"]?.[0];
+        const child2 = record.fields["Child 2"]?.[0];
+        const requestedBy = record.fields["Requested By"]?.[0];
+
+        return (
+          record.fields.Status === "Pending" &&
+          child1 === fromChild.id &&
+          child2 === toChild.id &&
+          requestedBy === fromChild.id
+        );
+      });
+
+      if (!requestRecord) {
+        return res.status(404).json({
+          message: "Pending friend request not found",
+        });
+      }
+
+      const newStatus =
+        action === "accept" ? "Accepted" : "Declined";
+
+      const airtableResponse = await fetch(
+        `${AIRTABLE_API_ROOT}/${process.env.AIRTABLE_BASE_ID}/${encodeURIComponent(FRIENDS_TABLE)}/${requestRecord.id}`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${process.env.AIRTABLE_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            fields: {
+              Status: newStatus,
+            },
+          }),
+        }
+      );
+
+      if (!airtableResponse.ok) {
+        const details = await airtableResponse.text();
+
+        throw new AirtableRequestError(
+          airtableResponse.status,
+          details
+        );
+      }
+
+      res.json({
+        message:
+          action === "accept"
+            ? "Friend request accepted"
+            : "Friend request declined",
+        status: newStatus,
+        fromChildId: fromChild.fields["Child ID"],
+        toChildId: toChild.fields["Child ID"],
+      });
+    } catch (error) {
+      sendServerError(res, error);
+    }
+  }
+);
+
+app.get(
+  "/api/friends/:childId",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const requestedChildId = req.params.childId
+        .trim()
+        .toLowerCase();
+
+      const loggedInChildId = String(req.user.childId)
+        .trim()
+        .toLowerCase();
+
+      if (requestedChildId !== loggedInChildId) {
+        return res.status(403).json({
+          message: "You can only retrieve your own friends",
+        });
+      }
+
+      const children =
+        await fetchAllAirtableRecords(CHILDREN_TABLE);
+
+      const childRecord = children.find(
+        (record) =>
+          String(record.fields["Child ID"] ?? "")
+            .trim()
+            .toLowerCase() === requestedChildId &&
+          record.fields.Status === "Active"
+      );
+
+      if (!childRecord) {
+        return res.status(404).json({
+          message: "Active child not found",
+        });
+      }
+
+      const friendships =
+        await fetchAllAirtableRecords(FRIENDS_TABLE);
+
+      const acceptedFriendships = friendships.filter(
+        (record) =>
+          record.fields.Status === "Accepted" &&
+          (
+            record.fields["Child 1"]?.includes(childRecord.id) ||
+            record.fields["Child 2"]?.includes(childRecord.id)
+          )
+      );
+
+      const friends = acceptedFriendships
+        .map((record) => {
+          const child1Id = record.fields["Child 1"]?.[0];
+          const child2Id = record.fields["Child 2"]?.[0];
+
+          const friendRecordId =
+            child1Id === childRecord.id
+              ? child2Id
+              : child1Id;
+
+          const friend = children.find(
+            (child) => child.id === friendRecordId
+          );
+
+          if (!friend || friend.fields.Status !== "Active") {
+            return null;
+          }
+
+          return {
+            childId: friend.fields["Child ID"] ?? "",
+            name: friend.fields.Name ?? "",
+            avatar: friend.fields.Avatar?.[0] ?? null,
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) =>
+          a.name.localeCompare(b.name)
         );
 
-        if (!friend || friend.fields.Status !== "Active") {
-          return null;
-        }
-
-        return {
-          childId: friend.fields["Child ID"] ?? "",
-          name: friend.fields.Name ?? "",
-          avatar: friend.fields.Avatar?.[0] ?? null,
-        };
-      })
-      .filter(Boolean)
-      .sort((a, b) =>
-        a.name.localeCompare(b.name)
-      );
-
-    res.json(friends);
-  } catch (error) {
-    sendServerError(res, error);
+      res.json(friends);
+    } catch (error) {
+      sendServerError(res, error);
+    }
   }
-});
+);
 
-app.get("/api/friend-requests/:childId", async (req, res) => {
+app.get("/api/friend-requests/:childId", requireAuth, async (req, res) => {
   try {
     const requestedChildId = req.params.childId
       .trim()
       .toLowerCase();
+
+    const loggedInChildId = String(req.user.childId)
+      .trim()
+      .toLowerCase();
+
+    if (requestedChildId !== loggedInChildId) {
+      return res.status(403).json({
+        message: "You can only retrieve your own friend requests",
+      });
+    }
 
     const children =
       await fetchAllAirtableRecords(CHILDREN_TABLE);
@@ -506,6 +547,7 @@ app.get("/api/friend-requests/:childId", async (req, res) => {
 
 app.get(
   "/api/children/:childId/collection",
+  requireAuth,
   async (req, res) => {
     try {
       const requestedChildId =
@@ -530,6 +572,54 @@ app.get(
         return res.status(404).json({
           message: "Active child not found",
         });
+      }
+
+      const loggedInChildId = String(req.user.childId)
+        .trim()
+        .toLowerCase();
+
+      const viewingOwnCollection =
+        requestedChildId === loggedInChildId;
+
+      if (!viewingOwnCollection) {
+        const loggedInChildRecord = children.find(
+          (record) =>
+            String(record.fields["Child ID"] ?? "")
+              .trim()
+              .toLowerCase() === loggedInChildId &&
+            record.fields.Status === "Active"
+        );
+
+        if (!loggedInChildRecord) {
+          return res.status(403).json({
+            message: "Logged-in child is not active",
+          });
+        }
+
+        const friendships =
+          await fetchAllAirtableRecords(FRIENDS_TABLE);
+
+        const areFriends = friendships.some((record) => {
+          if (record.fields.Status !== "Accepted") {
+            return false;
+          }
+
+          const child1 = record.fields["Child 1"]?.[0];
+          const child2 = record.fields["Child 2"]?.[0];
+
+          return (
+            (child1 === loggedInChildRecord.id &&
+              child2 === childRecord.id) ||
+            (child1 === childRecord.id &&
+              child2 === loggedInChildRecord.id)
+          );
+        });
+
+        if (!areFriends) {
+          return res.status(403).json({
+            message: "You can only view your own collection or a friend's collection",
+          });
+        }
       }
 
       const collectionRecords =
